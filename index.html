@@ -43,8 +43,10 @@ const { useState, useEffect, useMemo, useCallback, useRef } = React;
 /* ---------- Supabase ---------- */
 const SUPABASE_URL = "https://zwyadgdcbtjhybsiepmt.supabase.co";
 const SUPABASE_KEY = "sb_publishable_2XUXLVI8kqqK4nH62VWwRw_x79F5gNo";
-const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
-
+const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {
+  db: { schema: 'dj' }
+});
+  
 /* ---------- Local queue for offline-safe writes ---------- */
 const QUEUE_KEY = "dj_write_queue_v1";
 function queueGet() { try { return JSON.parse(localStorage.getItem(QUEUE_KEY) || "[]"); } catch { return []; } }
