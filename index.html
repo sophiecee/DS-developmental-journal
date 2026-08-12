@@ -1,0 +1,531 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>Developmental Journal</title>
+<script src="https://unpkg.com/@supabase/supabase-js@2"></script>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="journal-content.js"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Source+Sans+3:wght@400;500;600;700&display=swap');
+  :root { color-scheme: light; }
+  body { font-family: 'Source Sans 3', system-ui, sans-serif; background: #FAF6EE; }
+  .font-display { font-family: 'Fraunces', Georgia, serif; }
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-thumb { background: #C9BEA5; border-radius: 3px; }
+  button:focus-visible, a:focus-visible, [tabindex]:focus-visible { outline: 2px solid #8B6F47; outline-offset: 2px; }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel-source" id="app-source">
+
+const { useState, useEffect, useMemo, useCallback, useRef } = React;
+const {
+  LEVELS, BACKFILL, AREAS, ITEMS, GLOSSARY, STEPS_AVAILABLE
+} = window.DJ_CONTENT;
+
+/* ---------- Supabase ---------- */
+const SUPABASE_URL = "https://zwyadgdcbtjhybsiepmt.supabase.co";
+const SUPABASE_KEY = "sb_publishable_2XUXLVI8kqqK4nH62VWwRw_x79F5gNo";
+const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+/* ---------- Local queue for offline-safe writes ---------- */
+const QUEUE_KEY = "dj_write_queue_v1";
+function queueGet() { try { return JSON.parse(localStorage.getItem(QUEUE_KEY) || "[]"); } catch { return []; } }
+function queueSet(q) { localStorage.setItem(QUEUE_KEY, JSON.stringify(q)); }
+function queuePush(op) { const q = queueGet(); q.push(op); queueSet(q); }
+
+async function drainQueue(onDrain) {
+  let q = queueGet();
+  if (!q.length) return;
+  const remaining = [];
+  for (const op of q) {
+    try {
+      await runOp(op);
+    } catch (e) {
+      remaining.push(op);
+    }
+  }
+  queueSet(remaining);
+  if (onDrain) onDrain(remaining.length);
+}
+
+async function runOp(op) {
+  if (op.table === "mark") {
+    if (op.action === "upsert") {
+      const { error } = await sb.from("mark").upsert(op.row, { onConflict: "child_id,item_id,track,level" });
+      if (error) throw error;
+    } else if (op.action === "delete") {
+      const { error } = await sb.from("mark").delete().match(op.match);
+      if (error) throw error;
+    }
+  } else if (op.table === "item_note") {
+    const { error } = await sb.from("item_note").upsert(op.row, { onConflict: "child_id,item_id,track" });
+    if (error) throw error;
+  } else if (op.table === "step_concern") {
+    const { error } = await sb.from("step_concern").upsert(op.row, { onConflict: "child_id,step" });
+    if (error) throw error;
+  }
+}
+
+/* ---------- Small helpers ---------- */
+function todayISO() { return new Date().toISOString().slice(0, 10); }
+
+function levelColor(level) {
+  switch (level) {
+    case "emerging": return { bg: "#F4E9D8", border: "#D9BE8F", text: "#7A5C25" };
+    case "developing": return { bg: "#E4EEE0", border: "#A8C79A", text: "#4B6B3C" };
+    case "achieved": return { bg: "#DCEBEA", border: "#8FC0BC", text: "#2E6A65" };
+    case "achieved_before": return { bg: "#E8E4EF", border: "#B7A7D6", text: "#5B4A82" };
+    default: return { bg: "#F1EDE3", border: "#E0D7C3", text: "#8A7E64" };
+  }
+}
+
+/* ---------- Data hooks ---------- */
+function useChild() {
+  const [child, setChild] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState(null);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const { data, error } = await sb.from("child").select("*").limit(1).maybeSingle();
+        if (error) throw error;
+        setChild(data);
+      } catch (e) {
+        setErr(e.message || String(e));
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, []);
+
+  return { child, loading, err };
+}
+
+/* Loads all marks + notes for the child once, keyed for fast lookup.
+   Re-fetch is triggered by refreshToken bump after writes settle. */
+function useMarks(childId, refreshToken) {
+  const [marks, setMarks] = useState({});   // key `${item_id}|${track}` -> array of {level, observed_on, approximate}
+  const [notes, setNotes] = useState({});   // key `${item_id}|${track}` -> body
+  const [concerns, setConcerns] = useState({}); // step -> body
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!childId) return;
+    (async () => {
+      setLoading(true);
+      const [mRes, nRes, cRes] = await Promise.all([
+        sb.from("mark").select("*").eq("child_id", childId),
+        sb.from("item_note").select("*").eq("child_id", childId),
+        sb.from("step_concern").select("*").eq("child_id", childId)
+      ]);
+      const mk = {};
+      (mRes.data || []).forEach(r => {
+        const k = `${r.item_id}|${r.track}`;
+        (mk[k] = mk[k] || []).push(r);
+      });
+      const nt = {};
+      (nRes.data || []).forEach(r => { nt[`${r.item_id}|${r.track}`] = r.body; });
+      const cc = {};
+      (cRes.data || []).forEach(r => { cc[r.step] = r.body; });
+      setMarks(mk); setNotes(nt); setConcerns(cc); setLoading(false);
+    })();
+  }, [childId, refreshToken]);
+
+  return { marks, notes, concerns, loading };
+}
+
+/* ---------- Level control for one item/track ---------- */
+function LevelButtons({ childId, itemId, track, current, onChanged }) {
+  const [saving, setSaving] = useState(null);
+
+  const allLevels = [...LEVELS, BACKFILL];
+
+  const setLevel = async (level) => {
+    setSaving(level.id);
+    const row = {
+      child_id: childId,
+      item_id: itemId,
+      track,
+      level: level.id,
+      observed_on: todayISO(),
+      approximate: level.id === "achieved_before"
+    };
+    const op = { table: "mark", action: "upsert", row };
+    queuePush(op);
+    try {
+      await runOp(op);
+      queueSet(queueGet().filter(o => o !== op));
+    } catch (e) {
+      // stays queued, will drain later
+    }
+    setSaving(null);
+    onChanged();
+  };
+
+  const activeIds = new Set((current || []).map(r => r.level));
+
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {allLevels.map(level => {
+        const active = activeIds.has(level.id);
+        const c = levelColor(level.id);
+        return (
+          <button
+            key={level.id}
+            onClick={() => setLevel(level)}
+            title={level.hint}
+            className="text-xs font-medium px-2.5 py-1.5 rounded-full border transition-colors"
+            style={{
+              background: active ? c.bg : "#fff",
+              borderColor: active ? c.border : "#E3DCC9",
+              color: active ? c.text : "#8A7E64"
+            }}
+          >
+            {saving === level.id ? "…" : level.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/* ---------- One journal item row ---------- */
+function ItemRow({ item, childId, marks, notes, bump }) {
+  const [noteOpen, setNoteOpen] = useState(false);
+  const [noteText, setNoteText] = useState("");
+  const [savingNote, setSavingNote] = useState(false);
+
+  const tracks = item.split ? ["sign", "spoken"] : ["both"];
+
+  useEffect(() => {
+    const key = `${item.id}|${tracks[0]}`;
+    setNoteText(notes[key] || "");
+  }, [notes, item.id]);
+
+  const saveNote = async (track) => {
+    setSavingNote(true);
+    const row = { child_id: childId, item_id: item.id, track, body: noteText, updated_at: new Date().toISOString() };
+    const op = { table: "item_note", row };
+    queuePush(op);
+    try {
+      await runOp(op);
+      queueSet(queueGet().filter(o => o !== op));
+    } catch (e) {}
+    setSavingNote(false);
+    bump();
+  };
+
+  return (
+    <div className="py-4 border-b border-[#EAE2CD] last:border-b-0">
+      <p className="text-[15px] leading-snug text-[#3A3226] mb-2.5">{item.text}</p>
+      {tracks.map(track => (
+        <div key={track} className={tracks.length > 1 ? "mb-2" : ""}>
+          {tracks.length > 1 && (
+            <div className="text-[11px] uppercase tracking-wide text-[#8A7E64] mb-1">
+              {track === "sign" ? "Sign" : "Spoken"}
+            </div>
+          )}
+          <LevelButtons
+            childId={childId}
+            itemId={item.id}
+            track={track}
+            current={marks[`${item.id}|${track}`]}
+            onChanged={bump}
+          />
+        </div>
+      ))}
+      <button
+        onClick={() => setNoteOpen(o => !o)}
+        className="mt-2 text-xs text-[#8B6F47] underline underline-offset-2"
+      >
+        {noteOpen ? "Hide note" : (noteText ? "Edit note" : "Add note")}
+      </button>
+      {noteOpen && (
+        <div className="mt-2">
+          <textarea
+            value={noteText}
+            onChange={e => setNoteText(e.target.value)}
+            onBlur={() => saveNote(tracks[0])}
+            placeholder="Any notes or queries on how your child does this"
+            className="w-full text-sm rounded-lg border border-[#E3DCC9] p-2 bg-white text-[#3A3226]"
+            rows={2}
+          />
+          {savingNote && <span className="text-xs text-[#8A7E64]">Saving…</span>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------- Subdomain section within a step ---------- */
+function SubdomainSection({ step, sub, childId, marks, notes, bump }) {
+  const items = useMemo(() => ITEMS.filter(i => i.step === step && i.sub === sub.id), [step, sub]);
+  if (!items.length) return null;
+  return (
+    <div className="mb-8">
+      <h3 className="font-display text-lg text-[#5B4A2E] mb-1">{sub.name}</h3>
+      <div>
+        {items.map(item => (
+          <ItemRow key={item.id} item={item} childId={childId} marks={marks} notes={notes} bump={bump} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ---------- Step concern note ---------- */
+function StepConcern({ step, childId, concerns, bump }) {
+  const [text, setText] = useState(concerns[step] || "");
+  const [saving, setSaving] = useState(false);
+  useEffect(() => { setText(concerns[step] || ""); }, [concerns, step]);
+
+  const save = async () => {
+    setSaving(true);
+    const row = { child_id: childId, step, body: text, updated_at: new Date().toISOString() };
+    const op = { table: "step_concern", row };
+    queuePush(op);
+    try { await runOp(op); queueSet(queueGet().filter(o => o !== op)); } catch (e) {}
+    setSaving(false);
+    bump();
+  };
+
+  return (
+    <div className="mt-4 bg-[#F1EDE3] rounded-xl p-4">
+      <p className="text-sm text-[#5B4A2E] mb-2">
+        Thinking about this Step as a whole — anything you're concerned about or want to ask?
+      </p>
+      <textarea
+        value={text}
+        onChange={e => setText(e.target.value)}
+        onBlur={save}
+        rows={3}
+        className="w-full text-sm rounded-lg border border-[#E3DCC9] p-2 bg-white text-[#3A3226]"
+      />
+      {saving && <span className="text-xs text-[#8A7E64]">Saving…</span>}
+    </div>
+  );
+}
+
+/* ---------- Step view ---------- */
+function StepView({ step, childId, marks, notes, concerns, bump }) {
+  const subdomains = useMemo(() => {
+    const present = new Set(ITEMS.filter(i => i.step === step).map(i => i.sub));
+    return AREAS.flatMap(a =>
+      a.subdomains.filter(s => present.has(s.id)).map(s => ({ ...s, areaName: a.name }))
+    );
+  }, [step]);
+
+  let lastArea = null;
+  return (
+    <div>
+      {subdomains.map(sub => {
+        const showAreaHeader = sub.areaName !== lastArea;
+        lastArea = sub.areaName;
+        return (
+          <div key={sub.id}>
+            {showAreaHeader && (
+              <div className="text-[11px] uppercase tracking-widest text-[#B7A87F] mt-6 mb-2 first:mt-0">
+                {sub.areaName}
+              </div>
+            )}
+            <SubdomainSection step={step} sub={sub} childId={childId} marks={marks} notes={notes} bump={bump} />
+          </div>
+        );
+      })}
+      <StepConcern step={step} childId={childId} concerns={concerns} bump={bump} />
+    </div>
+  );
+}
+
+/* ---------- Profile grid (bird's-eye view) ---------- */
+function ProfileGrid({ marks }) {
+  const rows = useMemo(() => AREAS.flatMap(a => a.subdomains.map(s => ({ ...s, area: a.name }))), []);
+
+  const metFor = (step, sub) => {
+    const items = ITEMS.filter(i => i.step === step && i.sub === sub);
+    if (!items.length) return null;
+    let done = 0, total = 0;
+    items.forEach(item => {
+      const tracks = item.split ? ["sign", "spoken"] : ["both"];
+      tracks.forEach(track => {
+        total++;
+        const recs = marks[`${item.id}|${track}`] || [];
+        if (recs.some(r => r.level === "achieved" || r.level === "achieved_before")) done++;
+      });
+    });
+    return total ? done > total / 2 : null;
+  };
+
+  return (
+    <div className="overflow-x-auto -mx-4 px-4">
+      <table className="text-xs border-collapse min-w-[720px]">
+        <thead>
+          <tr>
+            <th className="text-left p-1.5 sticky left-0 bg-[#FAF6EE] font-medium text-[#5B4A2E]">Sub-domain</th>
+            {STEPS_AVAILABLE.map(s => (
+              <th key={s} className="p-1.5 font-medium text-[#8A7E64]">S{s}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map(r => (
+            <tr key={r.id} className="border-t border-[#EAE2CD]">
+              <td className="p-1.5 sticky left-0 bg-[#FAF6EE] whitespace-nowrap text-[#3A3226]">{r.name}</td>
+              {STEPS_AVAILABLE.map(s => {
+                const met = metFor(s, r.id);
+                return (
+                  <td key={s} className="p-1.5 text-center">
+                    {met === null ? "" : met ? (
+                      <span className="inline-block w-2.5 h-2.5 rounded-full bg-[#8FC0BC]" />
+                    ) : (
+                      <span className="inline-block w-2.5 h-2.5 rounded-full bg-[#EAE2CD]" />
+                    )}
+                  </td>
+                );
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <p className="text-xs text-[#8A7E64] mt-3">
+        A filled dot means more than half the items in that sub-domain are marked Achieved for that Step —
+        the same milestone rule the printed journal uses. It's a summary, not a gate: every item stays open regardless.
+      </p>
+    </div>
+  );
+}
+
+/* ---------- Step picker ---------- */
+function StepPicker({ step, setStep }) {
+  return (
+    <div className="flex gap-1 overflow-x-auto pb-1 -mx-4 px-4">
+      {STEPS_AVAILABLE.map(s => (
+        <button
+          key={s}
+          onClick={() => setStep(s)}
+          className="flex-shrink-0 px-3.5 py-1.5 rounded-full text-sm font-medium transition-colors"
+          style={{
+            background: s === step ? "#8B6F47" : "#fff",
+            color: s === step ? "#FAF6EE" : "#5B4A2E",
+            border: `1px solid ${s === step ? "#8B6F47" : "#E3DCC9"}`
+          }}
+        >
+          Step {s}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/* ---------- App ---------- */
+function App() {
+  const { child, loading: childLoading, err: childErr } = useChild();
+  const [step, setStep] = useState(1);
+  const [view, setView] = useState("review"); // 'review' | 'profile'
+  const [refreshToken, setRefreshToken] = useState(0);
+  const [queueCount, setQueueCount] = useState(queueGet().length);
+
+  const bump = useCallback(() => {
+    setQueueCount(queueGet().length);
+    setRefreshToken(t => t + 1);
+  }, []);
+
+  useEffect(() => {
+    const onOnline = () => drainQueue(n => { setQueueCount(n); bump(); });
+    window.addEventListener("online", onOnline);
+    onOnline();
+    return () => window.removeEventListener("online", onOnline);
+  }, [bump]);
+
+  const { marks, notes, concerns, loading: marksLoading } = useMarks(child?.id, refreshToken);
+
+  if (childLoading) {
+    return <div className="min-h-screen flex items-center justify-center text-[#8A7E64]">Loading…</div>;
+  }
+  if (childErr) {
+    return (
+      <div className="min-h-screen flex items-center justify-center p-6 text-center">
+        <div>
+          <p className="font-display text-lg text-[#5B4A2E] mb-2">Couldn't connect</p>
+          <p className="text-sm text-[#8A7E64]">{childErr}</p>
+        </div>
+      </div>
+    );
+  }
+  if (!child) {
+    return (
+      <div className="min-h-screen flex items-center justify-center p-6 text-center">
+        <div>
+          <p className="font-display text-lg text-[#5B4A2E] mb-2">No child record yet</p>
+          <p className="text-sm text-[#8A7E64]">Run the seed SQL in Supabase, then reload.</p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen pb-16">
+      <header className="sticky top-0 bg-[#FAF6EE] z-10 border-b border-[#EAE2CD] px-4 pt-5 pb-3">
+        <div className="flex items-baseline justify-between mb-3">
+          <h1 className="font-display text-2xl text-[#3A3226]">Developmental Journal</h1>
+          {queueCount > 0 && (
+            <span className="text-[11px] text-[#B7862F]">{queueCount} pending sync</span>
+          )}
+        </div>
+        <div className="flex gap-4 text-sm mb-3">
+          <button
+            onClick={() => setView("review")}
+            className={view === "review" ? "text-[#3A3226] font-semibold" : "text-[#8A7E64]"}
+          >
+            Review
+          </button>
+          <button
+            onClick={() => setView("profile")}
+            className={view === "profile" ? "text-[#3A3226] font-semibold" : "text-[#8A7E64]"}
+          >
+            Profile
+          </button>
+        </div>
+        {view === "review" && <StepPicker step={step} setStep={setStep} />}
+      </header>
+
+      <main className="px-4 pt-5 max-w-2xl mx-auto">
+        {marksLoading ? (
+          <p className="text-sm text-[#8A7E64]">Loading progress…</p>
+        ) : view === "review" ? (
+          <StepView step={step} childId={child.id} marks={marks} notes={notes} concerns={concerns} bump={bump} />
+        ) : (
+          <ProfileGrid marks={marks} />
+        )}
+      </main>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+<script>
+  // Babel's default JSX runtime injects `import { jsx } from "react/jsx-runtime"`,
+  // which cannot execute in a plain script. Transform explicitly with the
+  // classic runtime (React.createElement) instead, then run the result.
+  (function () {
+    var src = document.getElementById("app-source").textContent;
+    var out = Babel.transform(src, {
+      presets: [["react", { runtime: "classic" }]]
+    }).code;
+    var script = document.createElement("script");
+    script.textContent = out;
+    document.body.appendChild(script);
+  })();
+</script>
+</body>
+</html>
