@@ -4,6 +4,19 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
 <title>Developmental Journal</title>
+
+<!-- On-screen error overlay for mobile debugging -->
+<script>
+  window.onerror = function(msg, url, line, col, error) {
+    var box = document.getElementById('debug-err') || document.createElement('div');
+    box.id = 'debug-err';
+    box.style.cssText = 'position:fixed;top:10px;left:10px;right:10px;z-index:999999;background:#ffdddd;color:#900;padding:12px;border:2px solid #f00;font-family:monospace;font-size:12px;white-space:pre-wrap;word-break:break-all;';
+    box.innerText = 'JS Error:\n' + msg + '\n\nAt: ' + url + ':' + line + ':' + col + '\n\n' + (error && error.stack ? error.stack : '');
+    document.body ? document.body.appendChild(box) : document.addEventListener('DOMContentLoaded', function(){ document.body.appendChild(box); });
+    return false;
+  };
+</script>
+
 <script src="https://unpkg.com/@supabase/supabase-js@2"></script>
 <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -11,7 +24,7 @@
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="journal-content.js"></script>
 <style>
-  @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Source+Sans+3:wght@400;500;600;700&display=swap');
+  @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@400..600&family=Source+Sans+3:wght@400..700&display=swap');
   :root { color-scheme: light; }
   body { font-family: 'Source Sans 3', system-ui, sans-serif; background: #FAF6EE; }
   .font-display { font-family: 'Fraunces', Georgia, serif; }
@@ -26,9 +39,6 @@
 <script type="text/babel-source" id="app-source">
 
 const { useState, useEffect, useMemo, useCallback, useRef } = React;
-const {
-  LEVELS, BACKFILL, AREAS, ITEMS, GLOSSARY, STEPS_AVAILABLE
-} = window.DJ_CONTENT;
 
 /* ---------- Supabase ---------- */
 const SUPABASE_URL = "https://zwyadgdcbtjhybsiepmt.supabase.co";
@@ -110,12 +120,10 @@ function useChild() {
   return { child, loading, err };
 }
 
-/* Loads all marks + notes for the child once, keyed for fast lookup.
-   Re-fetch is triggered by refreshToken bump after writes settle. */
 function useMarks(childId, refreshToken) {
-  const [marks, setMarks] = useState({});   // key `${item_id}|${track}` -> array of {level, observed_on, approximate}
-  const [notes, setNotes] = useState({});   // key `${item_id}|${track}` -> body
-  const [concerns, setConcerns] = useState({}); // step -> body
+  const [marks, setMarks] = useState({});
+  const [notes, setNotes] = useState({});
+  const [concerns, setConcerns] = useState({});
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -144,7 +152,7 @@ function useMarks(childId, refreshToken) {
 }
 
 /* ---------- Level control for one item/track ---------- */
-function LevelButtons({ childId, itemId, track, current, onChanged }) {
+function LevelButtons({ childId, itemId, track, current, onChanged, LEVELS, BACKFILL }) {
   const [saving, setSaving] = useState(null);
 
   const allLevels = [...LEVELS, BACKFILL];
@@ -164,9 +172,7 @@ function LevelButtons({ childId, itemId, track, current, onChanged }) {
     try {
       await runOp(op);
       queueSet(queueGet().filter(o => o !== op));
-    } catch (e) {
-      // stays queued, will drain later
-    }
+    } catch (e) {}
     setSaving(null);
     onChanged();
   };
@@ -199,7 +205,7 @@ function LevelButtons({ childId, itemId, track, current, onChanged }) {
 }
 
 /* ---------- One journal item row ---------- */
-function ItemRow({ item, childId, marks, notes, bump }) {
+function ItemRow({ item, childId, marks, notes, bump, LEVELS, BACKFILL }) {
   const [noteOpen, setNoteOpen] = useState(false);
   const [noteText, setNoteText] = useState("");
   const [savingNote, setSavingNote] = useState(false);
@@ -240,6 +246,8 @@ function ItemRow({ item, childId, marks, notes, bump }) {
             track={track}
             current={marks[`${item.id}|${track}`]}
             onChanged={bump}
+            LEVELS={LEVELS}
+            BACKFILL={BACKFILL}
           />
         </div>
       ))}
@@ -267,15 +275,15 @@ function ItemRow({ item, childId, marks, notes, bump }) {
 }
 
 /* ---------- Subdomain section within a step ---------- */
-function SubdomainSection({ step, sub, childId, marks, notes, bump }) {
-  const items = useMemo(() => ITEMS.filter(i => i.step === step && i.sub === sub.id), [step, sub]);
+function SubdomainSection({ step, sub, childId, marks, notes, bump, ITEMS, LEVELS, BACKFILL }) {
+  const items = useMemo(() => ITEMS.filter(i => i.step === step && i.sub === sub.id), [step, sub, ITEMS]);
   if (!items.length) return null;
   return (
     <div className="mb-8">
       <h3 className="font-display text-lg text-[#5B4A2E] mb-1">{sub.name}</h3>
       <div>
         {items.map(item => (
-          <ItemRow key={item.id} item={item} childId={childId} marks={marks} notes={notes} bump={bump} />
+          <ItemRow key={item.id} item={item} childId={childId} marks={marks} notes={notes} bump={bump} LEVELS={LEVELS} BACKFILL={BACKFILL} />
         ))}
       </div>
     </div>
@@ -316,13 +324,15 @@ function StepConcern({ step, childId, concerns, bump }) {
 }
 
 /* ---------- Step view ---------- */
-function StepView({ step, childId, marks, notes, concerns, bump }) {
+function StepView({ step, childId, marks, notes, concerns, bump, DJ_CONTENT }) {
+  const { ITEMS, AREAS, LEVELS, BACKFILL } = DJ_CONTENT;
+
   const subdomains = useMemo(() => {
     const present = new Set(ITEMS.filter(i => i.step === step).map(i => i.sub));
     return AREAS.flatMap(a =>
       a.subdomains.filter(s => present.has(s.id)).map(s => ({ ...s, areaName: a.name }))
     );
-  }, [step]);
+  }, [step, ITEMS, AREAS]);
 
   let lastArea = null;
   return (
@@ -337,7 +347,7 @@ function StepView({ step, childId, marks, notes, concerns, bump }) {
                 {sub.areaName}
               </div>
             )}
-            <SubdomainSection step={step} sub={sub} childId={childId} marks={marks} notes={notes} bump={bump} />
+            <SubdomainSection step={step} sub={sub} childId={childId} marks={marks} notes={notes} bump={bump} ITEMS={ITEMS} LEVELS={LEVELS} BACKFILL={BACKFILL} />
           </div>
         );
       })}
@@ -346,9 +356,10 @@ function StepView({ step, childId, marks, notes, concerns, bump }) {
   );
 }
 
-/* ---------- Profile grid (bird's-eye view) ---------- */
-function ProfileGrid({ marks }) {
-  const rows = useMemo(() => AREAS.flatMap(a => a.subdomains.map(s => ({ ...s, area: a.name }))), []);
+/* ---------- Profile grid ---------- */
+function ProfileGrid({ marks, DJ_CONTENT }) {
+  const { AREAS, STEPS_AVAILABLE, ITEMS } = DJ_CONTENT;
+  const rows = useMemo(() => AREAS.flatMap(a => a.subdomains.map(s => ({ ...s, area: a.name }))), [AREAS]);
 
   const metFor = (step, sub) => {
     const items = ITEMS.filter(i => i.step === step && i.sub === sub);
@@ -396,16 +407,12 @@ function ProfileGrid({ marks }) {
           ))}
         </tbody>
       </table>
-      <p className="text-xs text-[#8A7E64] mt-3">
-        A filled dot means more than half the items in that sub-domain are marked Achieved for that Step —
-        the same milestone rule the printed journal uses. It's a summary, not a gate: every item stays open regardless.
-      </p>
     </div>
   );
 }
 
 /* ---------- Step picker ---------- */
-function StepPicker({ step, setStep }) {
+function StepPicker({ step, setStep, STEPS_AVAILABLE }) {
   return (
     <div className="flex gap-1 overflow-x-auto pb-1 -mx-4 px-4">
       {STEPS_AVAILABLE.map(s => (
@@ -426,11 +433,16 @@ function StepPicker({ step, setStep }) {
   );
 }
 
-/* ---------- App ---------- */
+/* ---------- Main App ---------- */
 function App() {
+  const DJ_CONTENT = window.DJ_CONTENT;
+  if (!DJ_CONTENT) {
+    throw new Error("DJ_CONTENT is not loaded yet.");
+  }
+
   const { child, loading: childLoading, err: childErr } = useChild();
   const [step, setStep] = useState(1);
-  const [view, setView] = useState("review"); // 'review' | 'profile'
+  const [view, setView] = useState("review");
   const [refreshToken, setRefreshToken] = useState(0);
   const [queueCount, setQueueCount] = useState(queueGet().length);
 
@@ -495,37 +507,40 @@ function App() {
             Profile
           </button>
         </div>
-        {view === "review" && <StepPicker step={step} setStep={setStep} />}
+        {view === "review" && <StepPicker step={step} setStep={setStep} STEPS_AVAILABLE={DJ_CONTENT.STEPS_AVAILABLE} />}
       </header>
 
       <main className="px-4 pt-5 max-w-2xl mx-auto">
         {marksLoading ? (
           <p className="text-sm text-[#8A7E64]">Loading progress…</p>
         ) : view === "review" ? (
-          <StepView step={step} childId={child.id} marks={marks} notes={notes} concerns={concerns} bump={bump} />
+          <StepView step={step} childId={child.id} marks={marks} notes={notes} concerns={concerns} bump={bump} DJ_CONTENT={DJ_CONTENT} />
         ) : (
-          <ProfileGrid marks={marks} />
+          <ProfileGrid marks={marks} DJ_CONTENT={DJ_CONTENT} />
         )}
       </main>
     </div>
   );
 }
 
-ReactDOM.createRoot(document.getElementById("root")).render(<App />);
 </script>
+
 <script>
-  // Babel's default JSX runtime injects `import { jsx } from "react/jsx-runtime"`,
-  // which cannot execute in a plain script. Transform explicitly with the
-  // classic runtime (React.createElement) instead, then run the result.
-  (function () {
-    var src = document.getElementById("app-source").textContent;
-    var out = Babel.transform(src, {
-      presets: [["react", { runtime: "classic" }]]
-    }).code;
-    var script = document.createElement("script");
-    script.textContent = out;
-    document.body.appendChild(script);
-  })();
+  // Ensure execution runs after DOM and external scripts finish loading
+  window.addEventListener('DOMContentLoaded', function () {
+    try {
+      var src = document.getElementById("app-source").textContent;
+      var out = Babel.transform(src, {
+        presets: [["react", { runtime: "classic" }]]
+      }).code;
+      var script = document.createElement("script");
+      script.textContent = out + "\nReactDOM.createRoot(document.getElementById('root')).render(React.createElement(App));";
+      document.body.appendChild(script);
+    } catch (err) {
+      if (window.onerror) window.onerror(err.message, "inline-loader", 0, 0, err);
+    }
+  });
 </script>
 </body>
 </html>
+
