@@ -456,16 +456,18 @@ function StepView({ step, childId, marks, notes, concerns, bump, DJ_CONTENT }) {
   return (
     <div>
       {subdomains.length > 1 && (
-        <div className="sticky top-32 z-[5] bg-[#FAF6EE] flex gap-1.5 overflow-x-auto pb-2 mb-4 -mx-4 px-4 border-b border-[#EAE2CD]">
-          {subdomains.map(sub => (
-            <button
-              key={sub.id}
-              onClick={() => jumpTo(sub.id)}
-              className="flex-shrink-0 text-xs px-2.5 py-1 rounded-full bg-white border border-[#E3DCC9] text-[#5B4A2E]"
-            >
-              {sub.name}
-            </button>
-          ))}
+        <div className="sticky top-32 z-[5] bg-[#FAF6EE] -mx-4 px-4 mb-4 border-b border-[#EAE2CD]">
+          <div className="flex gap-1.5 overflow-x-auto pb-2">
+            {subdomains.map(sub => (
+              <button
+                key={sub.id}
+                onClick={() => jumpTo(sub.id)}
+                className="flex-shrink-0 text-xs px-2.5 py-1 rounded-full bg-white border border-[#E3DCC9] text-[#5B4A2E]"
+              >
+                {sub.name}
+              </button>
+            ))}
+          </div>
         </div>
       )}
       {subdomains.map(sub => {
@@ -576,7 +578,7 @@ function useReviewSessions(childId, refreshToken) {
   return sessions;
 }
 
-function ReviewSessionBar({ childId, sessions, bump }) {
+function ReviewSessionBarCompact({ childId, sessions, bump }) {
   const open = sessions.find(s => !s.finished_at);
 
   const start = async () => {
@@ -588,20 +590,14 @@ function ReviewSessionBar({ childId, sessions, bump }) {
     bump();
   };
 
-  return (
-    <div className="flex items-center justify-between bg-[#F1EDE3] rounded-xl px-3 py-2 mb-4 text-sm">
-      {open ? (
-        <>
-          <span className="text-[#5B4A2E]">Review in progress since {new Date(open.started_at).toLocaleDateString()}</span>
-          <button onClick={finish} className="text-[#8B6F47] font-medium underline underline-offset-2">Finish review</button>
-        </>
-      ) : (
-        <>
-          <span className="text-[#8A7E64]">Not currently reviewing</span>
-          <button onClick={start} className="text-[#8B6F47] font-medium underline underline-offset-2">Start a review</button>
-        </>
-      )}
-    </div>
+  return open ? (
+    <button onClick={finish} className="text-[#8B6F47] font-medium underline underline-offset-2 whitespace-nowrap">
+      Reviewing · Finish
+    </button>
+  ) : (
+    <button onClick={start} className="text-[#8A7E64] underline underline-offset-2 whitespace-nowrap">
+      Start a review
+    </button>
   );
 }
 
@@ -836,7 +832,7 @@ function Journal({ onSignOut }) {
             </button>
           </div>
         </div>
-        <div className="flex gap-4 text-sm mb-3">
+        <div className="flex items-center gap-4 text-sm mb-3">
           <button
             onClick={() => setView("review")}
             className={view === "review" ? "text-[#3A3226] font-semibold" : "text-[#8A7E64]"}
@@ -861,12 +857,14 @@ function Journal({ onSignOut }) {
           >
             History
           </button>
+          <span className="ml-auto text-xs">
+            <ReviewSessionBarCompact childId={child.id} sessions={sessions} bump={bump} />
+          </span>
         </div>
         {view === "review" && <StepPicker step={step} setStep={setStep} STEPS_AVAILABLE={DJ_CONTENT.STEPS_AVAILABLE} />}
       </header>
 
       <main className="px-4 pt-5 max-w-2xl mx-auto">
-        {view === "review" && <ReviewSessionBar childId={child.id} sessions={sessions} bump={bump} />}
         {marksLoading ? (
           <p className="text-sm text-[#8A7E64]">Loading progress…</p>
         ) : view === "review" ? (
