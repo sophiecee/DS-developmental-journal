@@ -437,7 +437,7 @@ function StepConcern({ step, childId, concerns, bump }) {
 }
 
 /* ---------- Step view ---------- */
-function StepView({ step, childId, marks, notes, concerns, bump, DJ_CONTENT }) {
+function StepView({ step, childId, marks, notes, concerns, bump, DJ_CONTENT, headerHeight }) {
   const { ITEMS, AREAS, LEVELS, BACKFILL } = DJ_CONTENT;
 
   const subdomains = useMemo(() => {
@@ -457,7 +457,7 @@ function StepView({ step, childId, marks, notes, concerns, bump, DJ_CONTENT }) {
     <div>
       {subdomains.length > 1 && (
         <div
-          style={{ position: "sticky", top: "8rem", zIndex: 5, background: "#FAF6EE" }}
+          style={{ position: "sticky", top: `${headerHeight}px`, zIndex: 5, background: "#FAF6EE" }}
           className="-mx-4 px-4 mb-4 border-b border-[#EAE2CD]"
         >
           <div className="flex gap-1.5 overflow-x-auto pb-2">
@@ -769,6 +769,22 @@ function Journal({ onSignOut }) {
     throw new Error("DJ_CONTENT is not loaded yet.");
   }
 
+  const headerRef = useRef(null);
+  // Measured, not guessed: the header's real height varies (the pending-sync
+  // link, the reviewing/start-a-review link, or just larger system font
+  // settings can all change it), so a fixed offset for the sticky
+  // sub-domain bar below it would sometimes leave it tucked invisibly
+  // behind the header rather than actually failing to stick.
+  const [headerHeight, setHeaderHeight] = useState(170);
+  useEffect(() => {
+    if (!headerRef.current) return;
+    const measure = () => setHeaderHeight(headerRef.current.offsetHeight);
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(headerRef.current);
+    return () => ro.disconnect();
+  }, []);
+
   const { child, loading: childLoading, err: childErr } = useChild();
   const [step, setStep] = useState(1);
   const [view, setView] = useState("review");
@@ -818,7 +834,7 @@ function Journal({ onSignOut }) {
 
   return (
     <div className="min-h-screen pb-16">
-      <header className="sticky top-0 bg-[#FAF6EE] z-10 border-b border-[#EAE2CD] px-4 pt-5 pb-3">
+      <header ref={headerRef} className="sticky top-0 bg-[#FAF6EE] z-10 border-b border-[#EAE2CD] px-4 pt-5 pb-3">
         <div className="flex items-baseline justify-between mb-3">
           <h1 className="font-display text-2xl text-[#3A3226]">Developmental Journal</h1>
           <div className="flex items-center gap-3">
@@ -871,7 +887,7 @@ function Journal({ onSignOut }) {
         {marksLoading ? (
           <p className="text-sm text-[#8A7E64]">Loading progress…</p>
         ) : view === "review" ? (
-          <StepView step={step} childId={child.id} marks={marks} notes={notes} concerns={concerns} bump={bump} DJ_CONTENT={DJ_CONTENT} />
+          <StepView step={step} childId={child.id} marks={marks} notes={notes} concerns={concerns} bump={bump} DJ_CONTENT={DJ_CONTENT} headerHeight={headerHeight} />
         ) : view === "profile" ? (
           <ProfileGrid marks={marks} DJ_CONTENT={DJ_CONTENT} />
         ) : view === "progress" ? (
