@@ -440,6 +440,25 @@ function StepConcern({ step, childId, concerns, bump }) {
 function StepView({ step, childId, marks, notes, concerns, bump, DJ_CONTENT, headerHeight }) {
   const { ITEMS, AREAS, LEVELS, BACKFILL } = DJ_CONTENT;
 
+  /* The sub-domain bar uses position:fixed rather than position:sticky.
+     Sticky silently fails if ANY ancestor has a non-visible overflow or
+     creates a containing block, and those failures are invisible and
+     hard to diagnose. Fixed positioning is relative to the viewport and
+     cannot be broken that way. The trade-off is that it no longer
+     reserves its own space in the document flow, so a spacer div of the
+     same measured height sits behind it to stop content jumping up
+     underneath. */
+  const barRef = useRef(null);
+  const [barHeight, setBarHeight] = useState(44);
+  useEffect(() => {
+    if (!barRef.current) return;
+    const measure = () => setBarHeight(barRef.current.offsetHeight || 44);
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(barRef.current);
+    return () => ro.disconnect();
+  }, [step]);
+
   const subdomains = useMemo(() => {
     const present = new Set(ITEMS.filter(i => i.step === step).map(i => i.sub));
     return AREAS.flatMap(a =>
@@ -449,29 +468,47 @@ function StepView({ step, childId, marks, notes, concerns, bump, DJ_CONTENT, hea
 
   const jumpTo = (subId) => {
     const el = document.getElementById(`sub-${step}-${subId}`);
-    if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+    if (!el) return;
+    // scroll manually rather than scrollIntoView, so the target clears
+    // both the fixed header and the fixed sub-domain bar above it
+    const y = el.getBoundingClientRect().top + window.pageYOffset - (headerHeight + barHeight + 8);
+    window.scrollTo({ top: y, behavior: "smooth" });
   };
 
   let lastArea = null;
   return (
     <div>
       {subdomains.length > 1 && (
-        <div
-          style={{ position: "sticky", top: `${headerHeight}px`, zIndex: 5, background: "#FAF6EE" }}
-          className="-mx-4 px-4 mb-4 border-b border-[#EAE2CD]"
-        >
-          <div className="flex gap-1.5 overflow-x-auto pb-2">
-            {subdomains.map(sub => (
-              <button
-                key={sub.id}
-                onClick={() => jumpTo(sub.id)}
-                className="flex-shrink-0 text-xs px-2.5 py-1 rounded-full bg-white border border-[#E3DCC9] text-[#5B4A2E]"
-              >
-                {sub.name}
-              </button>
-            ))}
+        <>
+          <div
+            ref={barRef}
+            style={{
+              position: "fixed",
+              top: `${headerHeight}px`,
+              left: 0,
+              right: 0,
+              zIndex: 5,
+              background: "#FAF6EE",
+              borderBottom: "1px solid #EAE2CD"
+            }}
+          >
+            <div className="max-w-2xl mx-auto px-4">
+              <div className="flex items-center gap-1.5 overflow-x-auto py-2">
+                {subdomains.map(sub => (
+                  <button
+                    key={sub.id}
+                    onClick={() => jumpTo(sub.id)}
+                    className="flex-shrink-0 text-xs px-2.5 py-1 rounded-full bg-white border border-[#E3DCC9] text-[#5B4A2E]"
+                  >
+                    {sub.name}
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
-        </div>
+          {/* reserves the space the fixed bar would have occupied */}
+          <div style={{ height: `${barHeight}px` }} className="mb-4" />
+        </>
       )}
       {subdomains.map(sub => {
         const showAreaHeader = sub.areaName !== lastArea;
