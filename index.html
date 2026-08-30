@@ -456,7 +456,10 @@ function StepView({ step, childId, marks, notes, concerns, bump, DJ_CONTENT }) {
   return (
     <div>
       {subdomains.length > 1 && (
-        <div className="sticky top-32 z-[5] bg-[#FAF6EE] -mx-4 px-4 mb-4 border-b border-[#EAE2CD]">
+        <div
+          style={{ position: "sticky", top: "8rem", zIndex: 5, background: "#FAF6EE" }}
+          className="-mx-4 px-4 mb-4 border-b border-[#EAE2CD]"
+        >
           <div className="flex gap-1.5 overflow-x-auto pb-2">
             {subdomains.map(sub => (
               <button
